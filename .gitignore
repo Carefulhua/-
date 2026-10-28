@@ -1,0 +1,18 @@
+# 发票 PDF 数据（含公司/个人信息，不提交）
+*.pdf
+*.xlsx
+*.xls
+
+# 打包产物
+build/
+dist/
+*.spec
+invoice-renamer.exe
+invoice-renamer-linux
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
