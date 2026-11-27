@@ -5,6 +5,21 @@
 """
 import re
 import sys
+import unicodedata
+
+# CJK 部首补充区（U+2E80–U+2EFF）→ 统一汉字。
+# 数据来源: Unicode UCD EquivalentUnifiedIdeograph.txt（康熙部首区由 NFKC 处理）。
+_RADICAL_SOURCE = (
+    '⺁⺂⺃⺄⺅⺆⺇⺈⺉⺊⺋⺌⺍⺎⺏⺐⺑⺒⺓⺔⺕⺖⺗⺘⺙⺛⺜⺝⺞⺟⺠⺡⺢⺣⺤⺥⺦⺧⺨⺩'
+    '⺪⺫⺬⺭⺮⺯⺰⺱⺲⺳⺴⺵⺶⺷⺸⺹⺺⺻⺼⺽⺾⺿⻀⻁⻂⻃⻄⻅⻆⻇⻈⻉⻊⻋⻌⻍⻎⻏⻐⻑'
+    '⻒⻓⻔⻕⻖⻗⻘⻙⻚⻛⻜⻝⻞⻟⻠⻡⻢⻣⻤⻥⻦⻧⻨⻩⻪⻫⻬⻭⻮⻯⻰⻱⻲⻳'
+)
+_RADICAL_TARGET = (
+    '厂乛乚乙亻冂𠘨刀刂卜㔾小小兀尣尢𡯂巳幺彑𫜹忄心扌攵旡日月歺母民氵氺灬爫爫丬牛犭王'
+    '𤴔目示礻𥫗糹纟罓罒㓁冗𦉫羊𦍌𦍋耂肀聿肉𦥑艹艹艹虎衤覀西见角𧢲讠贝𧾷车辶辶辶邑钅長'
+    '镸长门𨸏阝雨青韦页风飞食𩙿飠饣𩠐马骨鬼鱼鸟卤麦黄黾斉齐歯齿竜龙龜亀龟'
+)
+_RADICAL_TABLE = str.maketrans(_RADICAL_SOURCE, _RADICAL_TARGET)
 
 # 中文大写数字
 _CN_DIGITS = {
@@ -32,6 +47,16 @@ def setup_console():
                 stream.reconfigure(encoding='utf-8', errors='replace')
             except (ValueError, OSError):
                 pass
+
+
+def normalize_text(text):
+    """统一 PDF 文字流里的兼容汉字与部首字符。
+
+    部分发票 PDF 的 ToUnicode 映射把汉字输出成康熙部首/CJK 部首补充区字符
+    （如 ⽣ U+2F63、⻆ U+2EC6），直接匹配"角"会失败，金额小数位就丢了。
+    """
+    return unicodedata.normalize('NFKC', text).translate(_RADICAL_TABLE)
+
 
 # 品名行里出现这些词说明已经到了表头/合计区域
 _STOP_WORDS = {
@@ -184,7 +209,15 @@ def _truncate_name(name, limit):
 def _is_stop_token(token, has_name):
     if not token:
         return True
-    if re.match(r'^[\d¥￥%\-+.,]', token):
+    if token.startswith('*') or token.startswith('¥') or token.startswith('￥'):
+        return True
+    if re.fullmatch(r'[\d.,]+', token):
+        return True
+    # 税率/金额列，如 "6%"、"13%个"
+    if re.match(r'^\d+(\.\d+)?%', token):
+        return True
+    # 已经取到品名后再出现数字开头的列（数量/单价），说明品名结束
+    if re.match(r'^\d', token) and (has_name or not re.search(r'[\u4e00-\u9fff#A-Za-z]', token)):
         return True
     if token in _STOP_WORDS or token in _UNIT_WORDS:
         return True
@@ -192,6 +225,15 @@ def _is_stop_token(token, has_name):
     if has_name and re.fullmatch(r'[A-Za-z0-9\-_]{6,}', token):
         return True
     return False
+
+
+def _strip_unclosed_bracket(name):
+    """去掉换行截断留下的半个括号内容，如 "95号车用汽油(ⅥB"。"""
+    for opener, closer in (('(', ')'), ('（', '）')):
+        idx = name.rfind(opener)
+        if idx != -1 and name.find(closer, idx) == -1:
+            name = name[:idx]
+    return name.rstrip('-_/ ')
 
 
 def _extract_item_name(text):
@@ -218,11 +260,15 @@ def _extract_item_name(text):
 
     if not name:
         return category
+    name = _strip_unclosed_bracket(name)
+    if not name:
+        return category
     return f'{category}*{name}'
 
 
 def extract_invoice_info(text):
     """从 PDF 文本中提取发票信息。"""
+    text = normalize_text(text)
     # 统一空白字符，处理 \xa0、\u3000 等特殊空格
     text = re.sub(r'[\xa0\u3000]', ' ', text)
     # 全角￥→半角¥统一（pypdf 输出全角，但正则用半角）
